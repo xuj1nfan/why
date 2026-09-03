@@ -87,12 +87,27 @@ def _handle_init_zsh(_: argparse.Namespace) -> int:
     return 0
 
 
+def _handle_init_bash(_: argparse.Namespace) -> int:
+    print("# Add this to ~/.bashrc or evaluate it in the current shell.")
+    print(f"source {shlex.quote(_bash_hook_path())}")
+    return 0
+
+
 def _zsh_hook_path() -> str:
     return str(files("why").joinpath("why.zsh"))
 
 
+def _bash_hook_path() -> str:
+    return str(files("why").joinpath("why.bash"))
+
+
 def _handle_print_zsh_hook(_: argparse.Namespace) -> int:
     print(_zsh_hook_path())
+    return 0
+
+
+def _handle_print_bash_hook(_: argparse.Namespace) -> int:
+    print(_bash_hook_path())
     return 0
 
 
@@ -116,6 +131,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="why", description=__doc__)
     parser.add_argument("--version", action="version", version=__version__)
     parser.add_argument("--print-zsh-hook", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--print-bash-hook", action="store_true", help=argparse.SUPPRESS)
     subparsers = parser.add_subparsers(dest="subcommand")
 
     history = subparsers.add_parser("history", help="show shell memory for this session")
@@ -135,6 +151,8 @@ def build_parser() -> argparse.ArgumentParser:
     init_subparsers = init.add_subparsers(dest="shell", required=True)
     zsh = init_subparsers.add_parser("zsh", help="print zsh setup")
     zsh.set_defaults(handler=_handle_init_zsh)
+    bash = init_subparsers.add_parser("bash", help="print bash setup")
+    bash.set_defaults(handler=_handle_init_bash)
 
     internal = subparsers.add_parser("internal", help=argparse.SUPPRESS)
     internal_subparsers = internal.add_subparsers(dest="internal_command", required=True)
@@ -166,6 +184,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.print_zsh_hook:
         return _handle_print_zsh_hook(args)
+    if args.print_bash_hook:
+        return _handle_print_bash_hook(args)
     return args.handler(args)
 
 

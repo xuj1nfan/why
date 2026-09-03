@@ -19,7 +19,7 @@ why = "why.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-why = ["why.zsh"]
+why = ["why.bash", "why.zsh"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

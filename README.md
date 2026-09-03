@@ -1,6 +1,6 @@
 # why
 
-`why` is a lightweight, zsh-oriented shell diagnosis assistant with local
+`why` is a lightweight, zsh/Bash-oriented shell diagnosis assistant with local
 shell memory. It observes shell events and is intended to explain failures
 with their surrounding context; it never executes AI-generated commands.
 
@@ -13,7 +13,15 @@ CLI used by shell hooks:
 python -m why --help
 why history
 why init zsh
+why init bash
 why inspect
+```
+
+Enable the integration in the shell you use:
+
+```bash
+eval "$(why init zsh)"   # zsh
+eval "$(why init bash)"  # Bash
 ```
 
 The database defaults to `~/.local/share/why/why.db`. Set `WHY_DB_PATH` to use
