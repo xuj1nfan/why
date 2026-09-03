@@ -1,0 +1,35 @@
+# Maintainer: xujinfan
+pkgname=why-git
+pkgver=0.1.0a1.r2.g4ed6a3d
+pkgrel=1
+pkgdesc='Shell-native debugging assistant with local shell memory'
+arch=('any')
+url='https://github.com/xuj1nfan/why'
+license=('MIT')
+depends=('python')
+makedepends=('git' 'python-build' 'python-installer' 'python-setuptools')
+optdepends=('zsh: enable zsh integration')
+provides=('why')
+source=("$pkgname::git+$url.git")
+sha256sums=('SKIP')
+install='why.install'
+
+pkgver() {
+  cd "$srcdir/$pkgname"
+
+  local version
+  version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' pyproject.toml | head -n1)
+  version=${version//-/.}
+  printf '%s.r%s.g%s\n' "$version" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+build() {
+  cd "$srcdir/$pkgname"
+  python -m build --wheel --no-isolation
+}
+
+package() {
+  cd "$srcdir/$pkgname"
+  python -m installer --destdir="$pkgdir" dist/*.whl
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

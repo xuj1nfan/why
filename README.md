@@ -42,6 +42,25 @@ model = "your-model"
 Then export the API key through the configured environment variable. The key
 is never included in the prompt or stored in shell memory.
 
+## Arch Linux
+
+An Arch package definition is included in `packaging/arch`. Build and install
+the current development version locally with `paru`:
+
+```bash
+cd packaging/arch
+paru -Bi .
+```
+
+After the package is published to the AUR, install it with `paru`:
+
+```bash
+paru -S why-git
+```
+
+A plain `pacman -S` installation requires a
+configured binary repository or a downloaded package file.
+
 ## Local development
 
 ```bash
