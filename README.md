@@ -57,13 +57,3 @@ After the package is published to the AUR, install it with `paru`:
 ```bash
 paru -S why-git
 ```
-
-A plain `pacman -S` installation requires a
-configured binary repository or a downloaded package file.
-
-## Local development
-
-```bash
-python -m pip install -e .
-python -m unittest discover -s tests -v
-```
