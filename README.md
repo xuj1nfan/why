@@ -1,48 +1,37 @@
 # why
 
-`why` is a lightweight, zsh/Bash-oriented shell diagnosis assistant with local
-shell memory. It observes shell events and is intended to explain failures
-with their surrounding context; it never executes AI-generated commands.
+[中文](#中文) · [English](#english)
 
-## Usage
+## 中文
 
-Inspect recorded commands, preview diagnosis context, or diagnose the latest
-failed command:
+`why` 是面向 Bash 和 zsh 的轻量 Shell 诊断助手。它在本地记录命令、目录、退出码和耗时，并结合上下文解释失败原因；不会执行 AI 生成的命令。
 
-```bash
-why history
-why inspect
-why
-```
-
-Enable the integration in the shell you use:
+### 安装与启用
 
 ```bash
-eval "$(why init zsh)"   # zsh
+python -m pip install .
 eval "$(why init bash)"  # Bash
+eval "$(why init zsh)"   # zsh
 ```
 
-The database defaults to `~/.local/share/why/why.db`. Set `WHY_DB_PATH` to use
-a different database, which is useful for tests and development.
+将对应的 `eval` 命令加入 `~/.bashrc` 或 `~/.zshrc` 可永久启用。
 
-History output includes event IDs. Select one event and optionally attach
-captured stderr or a build log:
+### 使用
 
 ```bash
-why inspect --event 42 --output build.err
-why diagnose --event 42 --output build.err "Why is this header missing?"
-some-command 2>error.log
-why diagnose --output error.log
+why history                         # 查看当前会话历史
+why inspect                         # 预览将发送的诊断上下文
+why                                 # 诊断最近一次失败
+why inspect --event 42              # 预览指定事件
+why diagnose --event 42 --output build.err "为什么编译失败？"
+why diagnose --output -             # 从 stdin 读取错误输出
 ```
 
-Use `--output -` to read error output from stdin. Attached output is bounded,
-treated as untrusted data, and passed through the same credential redaction as
-command history.
+`why` 不会自动捕获 stdout/stderr；可通过 `--output FILE|-` 主动提供。错误输出有长度限制，并按不可信数据处理。
 
-To enable diagnosis, configure an OpenAI-compatible endpoint:
+### 配置
 
-The default config file is `~/.config/why/config.toml`; set `WHY_CONFIG_PATH`
-to use another location.
+默认配置文件为 `~/.config/why/config.toml`：
 
 ```toml
 [llm]
@@ -55,33 +44,13 @@ retention_days = 30
 max_events_per_session = 5000
 ```
 
-Then export the API key through the configured environment variable. The
-configured key is used only for request authentication and is not deliberately
-included in shell memory or diagnosis prompts.
+数据库默认位于 `~/.local/share/why/why.db`。可通过 `WHY_CONFIG_PATH`、`WHY_DB_PATH` 和 `WHY_LLM_*` 环境变量覆盖配置。
 
-## Privacy and security
+### 隐私、存储与清理
 
-`why` stores command text in a local SQLite database with owner-only
-permissions. Common inline credential forms—such as token environment
-variables, authorization headers, credential-bearing URLs, and password
-flags—are redacted before storage and again before diagnosis. This is
-best-effort protection, so avoid entering secrets directly on the command
-line.
+命令在写入 SQLite 前会脱敏，发送诊断前再次脱敏；数据库权限为仅所有者可读写。脱敏属于尽力保护，请避免直接在命令行输入密钥。诊断会把脱敏后的命令、目录、系统及 Git 状态发送到配置的 LLM 端点，建议先运行 `why inspect`。
 
-Diagnosis sends the redacted recent commands, working directories, OS, and Git
-state to the configured OpenAI-compatible endpoint. Run `why inspect` first to
-preview that context without making a network request.
-
-## Storage and performance
-
-The database schema is migrated automatically and currently uses SQLite WAL
-mode for concurrent terminals. Completed commands are written atomically by a
-background recorder, so the prompt does not wait for Python startup or disk
-I/O. Before the next command begins, the hook waits for any still-pending
-recorder to preserve ordering and read-after-write consistency.
-
-Retention runs with each background write. A value of `0` disables that
-specific limit. Apply the configured policy manually, or override it once:
+数据库自动迁移并使用 WAL 模式。命令通过后台进程原子写入，以减少提示符延迟。保留策略自动执行，值为 `0` 时关闭对应限制：
 
 ```bash
 why prune
@@ -89,33 +58,82 @@ why prune --days 7 --max-events 1000
 why prune --session
 ```
 
-## Development
-
-Create an isolated environment and install the test and build tools:
+### 开发
 
 ```bash
 python -m venv .venv
 .venv/bin/python -m pip install -e '.[dev]'
 .venv/bin/python -m pytest
 .venv/bin/python benchmarks/recording.py
+.venv/bin/python -m build --wheel --no-isolation
 ```
 
-The tests use temporary databases and do not require an API key or network
-access. Build a wheel with
-`.venv/bin/python -m build --wheel --no-isolation`.
+Arch Linux 开发包可在 `packaging/arch` 中运行 `paru -Bi .` 构建安装。
 
-## Arch Linux
+## English
 
-An Arch package definition is included in `packaging/arch`. Build and install
-the current development version locally with `paru`:
+`why` is a lightweight shell diagnosis assistant for Bash and zsh. It records commands, directories, exit codes, and duration locally, then uses that context to explain failures. It never executes AI-generated commands.
+
+### Install and enable
 
 ```bash
-cd packaging/arch
-paru -Bi .
+python -m pip install .
+eval "$(why init bash)"  # Bash
+eval "$(why init zsh)"   # zsh
 ```
 
-After the package is published to the AUR, install it with `paru`:
+Add the matching `eval` command to `~/.bashrc` or `~/.zshrc` to enable it permanently.
+
+### Usage
 
 ```bash
-paru -S why-git
+why history                         # Show history for this session
+why inspect                         # Preview diagnosis context
+why                                 # Diagnose the latest failure
+why inspect --event 42              # Preview a selected event
+why diagnose --event 42 --output build.err "Why did compilation fail?"
+why diagnose --output -             # Read error output from stdin
 ```
+
+`why` does not capture stdout/stderr automatically. Supply it explicitly with `--output FILE|-`. Attached output is bounded and treated as untrusted data.
+
+### Configuration
+
+The default configuration file is `~/.config/why/config.toml`:
+
+```toml
+[llm]
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+model = "your-model"
+
+[storage]
+retention_days = 30
+max_events_per_session = 5000
+```
+
+The database defaults to `~/.local/share/why/why.db`. Override settings with `WHY_CONFIG_PATH`, `WHY_DB_PATH`, or the `WHY_LLM_*` environment variables.
+
+### Privacy, storage, and retention
+
+Commands are redacted before SQLite storage and again before diagnosis. The database is owner-only. Redaction is best effort, so avoid typing secrets directly on the command line. Diagnosis sends redacted commands, directories, system details, and Git state to the configured LLM endpoint; use `why inspect` to preview them first.
+
+The database migrates automatically and uses WAL mode. Events are written atomically in the background to reduce prompt latency. Retention runs automatically; `0` disables a limit:
+
+```bash
+why prune
+why prune --days 7 --max-events 1000
+why prune --session
+```
+
+### Development
+
+```bash
+python -m venv .venv
+.venv/bin/python -m pip install -e '.[dev]'
+.venv/bin/python -m pytest
+.venv/bin/python benchmarks/recording.py
+.venv/bin/python -m build --wheel --no-isolation
+```
+
+On Arch Linux, build the development package from `packaging/arch` with `paru -Bi .`.
