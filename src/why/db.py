@@ -2,36 +2,51 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from collections.abc import Iterator
 from typing import Iterable
 
 from .models import Session, ShellEvent
+from .redaction import redact_command
 
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS sessions (
-    id TEXT PRIMARY KEY,
-    started_at REAL NOT NULL
-);
+SCHEMA_VERSION = 2
+MIGRATIONS = {
+    1: """
+        CREATE TABLE IF NOT EXISTS sessions (
+            id TEXT PRIMARY KEY,
+            started_at REAL NOT NULL
+        );
 
-CREATE TABLE IF NOT EXISTS shell_events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id TEXT NOT NULL,
-    command_raw TEXT NOT NULL,
-    cwd_before TEXT NOT NULL,
-    cwd_after TEXT,
-    started_at REAL NOT NULL,
-    ended_at REAL,
-    exit_code INTEGER,
-    FOREIGN KEY(session_id) REFERENCES sessions(id)
-);
+        CREATE TABLE IF NOT EXISTS shell_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            command_raw TEXT NOT NULL,
+            cwd_before TEXT NOT NULL,
+            cwd_after TEXT,
+            started_at REAL NOT NULL,
+            ended_at REAL,
+            exit_code INTEGER,
+            FOREIGN KEY(session_id) REFERENCES sessions(id)
+        );
 
-CREATE INDEX IF NOT EXISTS idx_shell_events_session_started
-    ON shell_events(session_id, started_at DESC, id DESC);
-"""
+        CREATE INDEX IF NOT EXISTS idx_shell_events_session_started
+            ON shell_events(session_id, started_at DESC, id DESC);
+    """,
+    2: """
+        CREATE INDEX IF NOT EXISTS idx_shell_events_session_ended
+            ON shell_events(session_id, ended_at DESC, id DESC);
+        PRAGMA journal_mode = WAL;
+    """,
+}
+
+
+class DatabaseVersionError(ValueError):
+    """The database was created by a newer, incompatible version of why."""
 
 
 class ShellMemory:
@@ -46,12 +61,35 @@ class ShellMemory:
         self.path = Path(path).expanduser()
 
     def _connect(self) -> sqlite3.Connection:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(self.path)
+        parent_existed = self.path.parent.exists()
+        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if not parent_existed:
+            self.path.parent.chmod(0o700)
+
+        try:
+            descriptor = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+        except FileExistsError:
+            self.path.chmod(0o600)
+        else:
+            os.close(descriptor)
+
+        connection = sqlite3.connect(self.path, timeout=2.0)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
-        connection.executescript(SCHEMA)
+        connection.execute("PRAGMA busy_timeout = 2000")
+        self._migrate(connection)
         return connection
+
+    @staticmethod
+    def _migrate(connection: sqlite3.Connection) -> None:
+        version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        if version > SCHEMA_VERSION:
+            raise DatabaseVersionError(
+                f"database schema {version} is newer than supported version {SCHEMA_VERSION}"
+            )
+        for target_version in range(version + 1, SCHEMA_VERSION + 1):
+            connection.executescript(MIGRATIONS[target_version])
+            connection.execute(f"PRAGMA user_version = {target_version}")
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
@@ -120,9 +158,66 @@ class ShellMemory:
                 """INSERT INTO shell_events
                    (session_id, command_raw, cwd_before, started_at)
                    VALUES (?, ?, ?, ?)""",
-                (session_id, command_raw, cwd_before, started_at),
+                (session_id, redact_command(command_raw), cwd_before, started_at),
             )
             return int(cursor.lastrowid)
+
+    def record_event(
+        self,
+        session_id: str,
+        command_raw: str,
+        cwd_before: str,
+        cwd_after: str,
+        started_at: float,
+        ended_at: float,
+        exit_code: int,
+        *,
+        retention_days: int | None = None,
+        max_events_per_session: int | None = None,
+    ) -> int:
+        """Atomically store one completed event."""
+
+        if not session_id:
+            raise ValueError("session_id must not be empty")
+        if not command_raw:
+            raise ValueError("command_raw must not be empty")
+        if not cwd_before or not cwd_after:
+            raise ValueError("event directories must not be empty")
+        if retention_days is not None and retention_days < 0:
+            raise ValueError("retention_days must be non-negative")
+        if max_events_per_session is not None and max_events_per_session < 0:
+            raise ValueError("max_events_per_session must be non-negative")
+
+        with self._connection() as connection:
+            connection.execute(
+                "INSERT OR IGNORE INTO sessions (id, started_at) VALUES (?, ?)",
+                (session_id, started_at),
+            )
+            cursor = connection.execute(
+                """INSERT INTO shell_events
+                   (session_id, command_raw, cwd_before, cwd_after,
+                    started_at, ended_at, exit_code)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    session_id,
+                    redact_command(command_raw),
+                    cwd_before,
+                    cwd_after,
+                    started_at,
+                    ended_at,
+                    exit_code,
+                ),
+            )
+            event_id = int(cursor.lastrowid)
+            if retention_days is not None or max_events_per_session is not None:
+                self._prune_connection(
+                    connection,
+                    retention_days or 0,
+                    max_events_per_session or 0,
+                    session_id=session_id,
+                    now=ended_at,
+                )
+            return event_id
 
     def end_event(
         self,
@@ -183,6 +278,17 @@ class ShellMemory:
             ).fetchall()
         return [self._event(row) for row in reversed(rows)]
 
+    def get_event(self, session_id: str, event_id: int) -> ShellEvent | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                """SELECT id, session_id, command_raw, cwd_before, cwd_after,
+                          started_at, ended_at, exit_code
+                   FROM shell_events
+                   WHERE session_id = ? AND id = ?""",
+                (session_id, event_id),
+            ).fetchone()
+        return self._event(row) if row else None
+
     def get_latest_failed_event(self, session_id: str) -> ShellEvent | None:
         with self._connection() as connection:
             row = connection.execute(
@@ -207,6 +313,85 @@ class ShellMemory:
                 )
                 connection.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
             return cursor.rowcount
+
+    def prune(
+        self,
+        retention_days: int = 30,
+        max_events_per_session: int = 5000,
+        *,
+        session_id: str | None = None,
+        now: float | None = None,
+    ) -> int:
+        """Delete events outside the age/count policy; zero disables a limit."""
+
+        if retention_days < 0 or max_events_per_session < 0:
+            raise ValueError("retention limits must be non-negative")
+        with self._connection() as connection:
+            return self._prune_connection(
+                connection,
+                retention_days,
+                max_events_per_session,
+                session_id=session_id,
+                now=time.time() if now is None else now,
+            )
+
+    @staticmethod
+    def _prune_connection(
+        connection: sqlite3.Connection,
+        retention_days: int,
+        max_events_per_session: int,
+        *,
+        session_id: str | None,
+        now: float,
+    ) -> int:
+        deleted = 0
+        session_filter = " AND session_id = ?" if session_id else ""
+        parameters: tuple[object, ...] = (session_id,) if session_id else ()
+        if retention_days:
+            cutoff = now - retention_days * 86400
+            cursor = connection.execute(
+                "DELETE FROM shell_events WHERE started_at < ?" + session_filter,
+                (cutoff, *parameters),
+            )
+            deleted += cursor.rowcount
+
+        if max_events_per_session:
+            if session_id:
+                session_ids = [session_id]
+            else:
+                session_ids = [
+                    row[0] for row in connection.execute("SELECT id FROM sessions").fetchall()
+                ]
+            for current_session in session_ids:
+                cursor = connection.execute(
+                    """DELETE FROM shell_events WHERE id IN (
+                           SELECT id FROM shell_events
+                           WHERE session_id = ?
+                           ORDER BY started_at DESC, id DESC
+                           LIMIT -1 OFFSET ?
+                       )""",
+                    (current_session, max_events_per_session),
+                )
+                deleted += cursor.rowcount
+
+        if session_id:
+            connection.execute(
+                """DELETE FROM sessions
+                   WHERE id = ? AND NOT EXISTS (
+                       SELECT 1 FROM shell_events
+                       WHERE shell_events.session_id = sessions.id
+                   )""",
+                (session_id,),
+            )
+        else:
+            connection.execute(
+                """DELETE FROM sessions
+                   WHERE NOT EXISTS (
+                       SELECT 1 FROM shell_events
+                       WHERE shell_events.session_id = sessions.id
+                   )"""
+            )
+        return deleted
 
     def all_sessions(self) -> Iterable[Session]:
         with self._connection() as connection:

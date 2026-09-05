@@ -38,7 +38,9 @@ class LLMTests(unittest.TestCase):
         self.assertEqual(request.full_url, "https://example.test/v1/chat/completions")
         self.assertEqual(timeout, 4)
         self.assertEqual(request.get_header("Authorization"), "Bearer secret")
-        self.assertEqual(json.loads(request.data)["messages"][1]["content"], "shell context")
+        messages = json.loads(request.data)["messages"]
+        self.assertEqual(messages[1]["content"], "shell context")
+        self.assertIn("untrusted data", messages[0]["content"])
 
     def test_missing_key_is_friendly(self):
         config = LLMConfig(api_key_env="WHY_MISSING_KEY", model="test-model")

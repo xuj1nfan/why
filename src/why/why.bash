@@ -20,8 +20,19 @@ if [[ "${_WHY_BASH_HOOK_INSTALLED:-0}" != "1" ]]; then
         export WHY_SESSION_PID="$$"
     fi
 
-    _WHY_BASH_PENDING_EVENT_ID=""
     _WHY_BASH_PENDING_COMMAND=""
+    _WHY_BASH_PENDING_CWD=""
+    _WHY_BASH_PENDING_STARTED_AT=""
+    _WHY_BASH_RECORDER_PID=""
+
+    _why_bash_wait_recorder() {
+        if [[ -n "${_WHY_BASH_RECORDER_PID:-}" ]]; then
+            _WHY_BASH_HOOK_BUSY=1
+            wait "$_WHY_BASH_RECORDER_PID" 2>/dev/null || true
+            _WHY_BASH_RECORDER_PID=""
+            _WHY_BASH_HOOK_BUSY=0
+        fi
+    }
 
     _why_bash_history_command() {
         local history_line history_number history_command
@@ -32,11 +43,11 @@ if [[ "${_WHY_BASH_HOOK_INSTALLED:-0}" != "1" ]]; then
 
     _why_bash_debug() {
         local command="${1:-}"
-        local previous_status="${2:-0}"
         [[ "${_WHY_BASH_HOOK_BUSY:-0}" == "1" ]] && return 0
 
         case "$command" in
-            why|why\ *|_why_bash_*) return 0 ;;
+            why|why\ *) _why_bash_wait_recorder; return 0 ;;
+            _why_bash_*) return 0 ;;
         esac
 
         # DEBUG fires before each simple command. history(1) gives us the
@@ -49,24 +60,10 @@ if [[ "${_WHY_BASH_HOOK_INSTALLED:-0}" != "1" ]]; then
         command="${history_command:-$command}"
         [[ "$command" == "$_WHY_BASH_PENDING_COMMAND" ]] && return 0
 
-        # Finish the previous input line with its status, then begin this one.
-        if [[ -n "${_WHY_BASH_PENDING_EVENT_ID:-}" ]]; then
-            _WHY_BASH_HOOK_BUSY=1
-            WHY_INTERNAL=1 command why internal end \
-                --event-id "$_WHY_BASH_PENDING_EVENT_ID" \
-                --exit-code "$previous_status" \
-                --cwd "$PWD" >/dev/null 2>&1 || true
-            _WHY_BASH_PENDING_EVENT_ID=""
-            _WHY_BASH_PENDING_COMMAND=""
-            _WHY_BASH_HOOK_BUSY=0
-        fi
-
-        _WHY_BASH_HOOK_BUSY=1
-        _WHY_BASH_PENDING_EVENT_ID="$(WHY_INTERNAL=1 command why internal begin \
-            --command "$command" \
-            --cwd "$PWD" 2>/dev/null)" || _WHY_BASH_PENDING_EVENT_ID=""
+        _why_bash_wait_recorder
         _WHY_BASH_PENDING_COMMAND="$command"
-        _WHY_BASH_HOOK_BUSY=0
+        _WHY_BASH_PENDING_CWD="$PWD"
+        _WHY_BASH_PENDING_STARTED_AT="${EPOCHREALTIME:-$(date +%s)}"
         return 0
     }
 
@@ -78,7 +75,7 @@ if [[ "${_WHY_BASH_HOOK_INSTALLED:-0}" != "1" ]]; then
             eval "$_WHY_BASH_PREVIOUS_DEBUG_COMMAND"
             _WHY_BASH_HOOK_BUSY=0
         fi
-        _why_bash_debug "$command" "$previous_status"
+        _why_bash_debug "$command"
     }
 
     _why_bash_precmd() {
@@ -87,14 +84,19 @@ if [[ "${_WHY_BASH_HOOK_INSTALLED:-0}" != "1" ]]; then
             return "$previous_status"
         fi
 
-        if [[ -n "${_WHY_BASH_PENDING_EVENT_ID:-}" ]]; then
+        if [[ -n "${_WHY_BASH_PENDING_COMMAND:-}" ]]; then
             _WHY_BASH_HOOK_BUSY=1
-            WHY_INTERNAL=1 command why internal end \
-                --event-id "$_WHY_BASH_PENDING_EVENT_ID" \
+            WHY_INTERNAL=1 command why internal record \
+                --command "$_WHY_BASH_PENDING_COMMAND" \
+                --cwd-before "$_WHY_BASH_PENDING_CWD" \
+                --cwd-after "$PWD" \
+                --started-at "$_WHY_BASH_PENDING_STARTED_AT" \
                 --exit-code "$previous_status" \
-                --cwd "$PWD" >/dev/null 2>&1 || true
-            _WHY_BASH_PENDING_EVENT_ID=""
+                >/dev/null 2>&1 &
+            _WHY_BASH_RECORDER_PID=$!
             _WHY_BASH_PENDING_COMMAND=""
+            _WHY_BASH_PENDING_CWD=""
+            _WHY_BASH_PENDING_STARTED_AT=""
             _WHY_BASH_HOOK_BUSY=0
         fi
 

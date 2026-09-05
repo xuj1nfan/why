@@ -1,5 +1,6 @@
 import os
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stdout
 from io import StringIO
@@ -35,6 +36,43 @@ class CliTests(unittest.TestCase):
                 else:
                     os.environ["WHY_SESSION_ID"] = old_session
 
+    def test_internal_record_stores_a_completed_event(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = f"{directory}/why.db"
+            with patch.dict(
+                os.environ,
+                {
+                    "WHY_DB_PATH": database_path,
+                    "WHY_SESSION_ID": "record-session",
+                    "WHY_CONFIG_PATH": f"{directory}/missing.toml",
+                },
+                clear=False,
+            ):
+                started_at = time.time()
+                result = main(
+                    [
+                        "internal",
+                        "record",
+                        "--command",
+                        "false",
+                        "--cwd-before",
+                        "/before",
+                        "--cwd-after",
+                        "/after",
+                        "--started-at",
+                        str(started_at),
+                        "--exit-code",
+                        "1",
+                    ]
+                )
+                history = StringIO()
+                with redirect_stdout(history):
+                    main(["history"])
+
+        self.assertEqual(result, 0)
+        self.assertIn("false", history.getvalue())
+        self.assertIn("/after", history.getvalue())
+
     def test_inspect_uses_recorded_events(self):
         with tempfile.TemporaryDirectory() as directory:
             old_db = os.environ.get("WHY_DB_PATH")
@@ -51,7 +89,7 @@ class CliTests(unittest.TestCase):
                 preview = StringIO()
                 with redirect_stdout(preview):
                     self.assertEqual(main(["inspect"]), 0)
-                self.assertIn("command: false", preview.getvalue())
+                self.assertIn('command: "false"', preview.getvalue())
                 self.assertIn("exit_code: 1", preview.getvalue())
             finally:
                 if old_db is None:
@@ -107,6 +145,80 @@ class CliTests(unittest.TestCase):
         hook_path = output.getvalue().splitlines()[1].removeprefix("source ").strip("'")
         self.assertTrue(hook_path.endswith("why.zsh"))
         self.assertTrue(os.path.isfile(hook_path))
+
+    def test_invalid_config_is_reported_without_traceback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = os.path.join(directory, "config.toml")
+            with open(config_path, "w", encoding="utf-8") as config_file:
+                config_file.write('[llm]\ntimeout = "soon"\n')
+            with patch.dict(os.environ, {"WHY_CONFIG_PATH": config_path}, clear=False):
+                error_output = StringIO()
+                with patch("sys.stderr", new=error_output):
+                    result = main(["history"])
+
+        self.assertEqual(result, 2)
+        self.assertIn("invalid configuration", error_output.getvalue())
+        self.assertNotIn("Traceback", error_output.getvalue())
+
+    def test_inspect_selects_event_and_reads_error_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = f"{directory}/why.db"
+            output_path = os.path.join(directory, "error.log")
+            with open(output_path, "w", encoding="utf-8") as output_file:
+                output_file.write("TOKEN=secret\ncompiler: header not found\n")
+            with patch.dict(
+                os.environ,
+                {
+                    "WHY_DB_PATH": database_path,
+                    "WHY_SESSION_ID": "inspect-selected",
+                    "WHY_CONFIG_PATH": f"{directory}/missing.toml",
+                },
+                clear=False,
+            ):
+                from why.db import ShellMemory
+
+                memory = ShellMemory(database_path)
+                selected = memory.record_event(
+                    "inspect-selected", "compile", "/tmp", "/tmp", 1, 2, 2
+                )
+                memory.record_event("inspect-selected", "later", "/tmp", "/tmp", 3, 4, 0)
+                preview = StringIO()
+                with redirect_stdout(preview):
+                    result = main(
+                        ["inspect", "--event", str(selected), "--output", output_path]
+                    )
+
+        self.assertEqual(result, 0)
+        self.assertIn('command: "compile"', preview.getvalue())
+        self.assertNotIn('command: "later"', preview.getvalue())
+        self.assertIn("header not found", preview.getvalue())
+        self.assertNotIn("TOKEN=secret", preview.getvalue())
+
+    def test_prune_command_uses_explicit_limits(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = f"{directory}/why.db"
+            with patch.dict(
+                os.environ,
+                {
+                    "WHY_DB_PATH": database_path,
+                    "WHY_SESSION_ID": "prune-session",
+                    "WHY_CONFIG_PATH": f"{directory}/missing.toml",
+                },
+                clear=False,
+            ):
+                from why.db import ShellMemory
+
+                memory = ShellMemory(database_path)
+                for index in range(3):
+                    memory.record_event(
+                        "prune-session", str(index), "/tmp", "/tmp", index, index, 0
+                    )
+                output = StringIO()
+                with redirect_stdout(output):
+                    result = main(["prune", "--days", "0", "--max-events", "1"])
+
+        self.assertEqual(result, 0)
+        self.assertIn("Pruned 2 event(s)", output.getvalue())
 
 
 if __name__ == "__main__":

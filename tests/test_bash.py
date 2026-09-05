@@ -10,6 +10,12 @@ ROOT = Path(__file__).parents[1]
 
 
 class BashIntegrationTests(unittest.TestCase):
+    def test_hook_uses_one_atomic_background_record(self):
+        hook = (ROOT / "src" / "why" / "why.bash").read_text(encoding="utf-8")
+        self.assertIn("internal record", hook)
+        self.assertNotIn("internal begin", hook)
+        self.assertNotIn("internal end", hook)
+
     def test_interactive_bash_records_events(self):
         with tempfile.TemporaryDirectory() as directory:
             temp_path = Path(directory)
@@ -55,6 +61,8 @@ class BashIntegrationTests(unittest.TestCase):
         self.assertIn("false", result.stdout)
         self.assertIn("true && false", result.stdout)
         self.assertNotIn("internal begin", result.stdout)
+        self.assertNotIn("internal record", result.stdout)
+        self.assertNotRegex(result.stdout, r"\[[0-9]+\]\s+[0-9]+")
 
     def test_existing_debug_and_prompt_hooks_are_preserved(self):
         with tempfile.TemporaryDirectory() as directory:

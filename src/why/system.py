@@ -47,9 +47,11 @@ def collect_git_context(cwd: str | Path) -> GitContext:
     if commit is None:
         return GitContext(branch=None, commit=None, dirty=None)
 
-    branch = git("branch", "--show-current") or "(detached HEAD)"
+    branch_result = git("branch", "--show-current")
+    branch = "(unknown)" if branch_result is None else branch_result or "(detached HEAD)"
     status = git("status", "--porcelain")
-    return GitContext(branch=branch, commit=commit, dirty=status != "")
+    dirty = None if status is None else status != ""
+    return GitContext(branch=branch, commit=commit, dirty=dirty)
 
 
 def collect_system_context(cwd: str | None = None) -> SystemContext:
