@@ -8,7 +8,7 @@ version = "0.1.0a1"
 description = "A shell-native debugging assistant with memory."
 readme = "README.md"
 requires-python = ">=3.11"
-license = "MIT"
+license = "GPL-3.0-or-later"
 license-files = ["LICENSE"]
 authors = [{name = "why contributors"}]
 dependencies = []
